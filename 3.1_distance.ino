@@ -47,7 +47,7 @@ mtrn3100::PIDController controller1(150.0, 10.0, 5.0);
 mtrn3100::PIDController controller2(150.0, 10.0, 5.0);
 
 // Distance PID Controller for front lidar
-mtrn3100::PIDController distanceController(2.0, 0.1, 0.5);  // Kp, Ki, Kd for distance control
+mtrn3100::PIDController distanceController(2.0, 0, 0);  // Kp, Ki, Kd for distance control
 
 
 // Lidar
