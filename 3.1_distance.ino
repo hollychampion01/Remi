@@ -97,41 +97,92 @@ void setup() {
 // Add at top of file
 bool shouldMoveForward = false;
 
+// --- Config ---
+const float targetDistance = 100.0f;    // mm
+const float tolerance = 5.0f;           // mm
+const float hysteresis = 3.0f;          // mm
+const unsigned long stableTimeRequired = 1000;  // ms to hold target before stopping
 
+// --- State ---
+bool inDeadZone = false;
+unsigned long stableStartTime = 0;
 
 void loop() {
   mpu.update();
-  updateLidars();
+  updateLidars();  // make sure this updates distFront
 
-  // --- PID DISTANCE CONTROL ---
-  float distanceError = distanceController.compute(distFront);
-  float forwardSpeed = constrain(-distanceError, -100.0f, 100.0f);  // Invert sign for correct direction
-  
-  // Apply PID-controlled forward/backward movement
-  if (abs(forwardSpeed) > 10.0f) {  // Dead zone to prevent jitter
-    motor1.setPWM(forwardSpeed);
-    motor2.setPWM(-forwardSpeed);  // Reverse direction for motor2
+  float error = distFront - targetDistance;
+  float absError = abs(error);
+
+  unsigned long now = millis();
+
+  if (absError <= (tolerance)) {
+    // Close enough — start stability timer if not already started
+    if (!inDeadZone) {
+      inDeadZone = true;
+      stableStartTime = now;
+    }
+
+    // Check if stable long enough
+    if (now - stableStartTime >= stableTimeRequired) {
+      motor1.setPWM(0);
+      motor2.setPWM(0);
+    } else {
+      // Still stabilizing
+      float distanceError = distanceController.compute(distFront);
+      float forwardSpeed = constrain(-distanceError, -100.0f, 100.0f);
+      motor1.setPWM(forwardSpeed);
+      motor2.setPWM(-forwardSpeed);
+    }
   } else {
-    motor1.setPWM(0);
-    motor2.setPWM(0);
+    // Not in range — reset state and apply PID
+    inDeadZone = false;
+
+    float distanceError = distanceController.compute(distFront);
+    float forwardSpeed = constrain(-distanceError, -100.0f, 100.0f);
+    motor1.setPWM(forwardSpeed);
+    motor2.setPWM(-forwardSpeed);
   }
 
-  // Update PID
-  float pos1 = encoder1.getRotation();
-  float pos2 = encoder2.getRotation();
-  pwm1 = constrain(controller1.compute(pos1), -200.0f, 200.0f);
-  pwm2 = constrain(controller2.compute(pos2), -200.0f, 200.0f);
-
-  // Optional: Debug output
-  printLidarReadings();
-  //printMPU();
-
-  // Wall following logic
-  //handleWallDetection();
-
-  delay(50);  // Smaller delay for smoother update
+  // (Optional) screen/serial/debug here
   screen();
+  delay(100);  // approx 30–40Hz control rate
+
 }
+
+// void loop() {
+//   mpu.update();
+//   updateLidars();
+
+//   // --- PID DISTANCE CONTROL ---
+//   float distanceError = distanceController.compute(distFront);
+//   float forwardSpeed = constrain(-distanceError, -100.0f, 100.0f);  // Invert sign for correct direction
+  
+//   // Apply PID-controlled forward/backward movement
+//   if (abs(distanceError) > 5.0f) {  // Dead zone to prevent jitter
+//     motor1.setPWM(forwardSpeed);
+//     motor2.setPWM(-forwardSpeed);  // Reverse direction for motor2
+//   } else {
+//     motor1.setPWM(0);
+//     motor2.setPWM(0);
+//   }
+
+//   // Update PID
+//   float pos1 = encoder1.getRotation();
+//   float pos2 = encoder2.getRotation();
+//   pwm1 = constrain(controller1.compute(pos1), -200.0f, 200.0f);
+//   pwm2 = constrain(controller2.compute(pos2), -200.0f, 200.0f);
+
+//   // Optional: Debug output
+//   printLidarReadings();
+//   //printMPU();
+
+//   // Wall following logic
+//   //handleWallDetection();
+
+//   delay(50);  // Smaller delay for smoother update
+//   screen();
+// }
 
 /// for OLED display
 void screen() {
@@ -150,5 +201,7 @@ void screen() {
   display.setTextSize(2);
   display.print(distance);
   display.print(" mm");
+  display.print(inDeadZone);
   display.display();
+
 }
