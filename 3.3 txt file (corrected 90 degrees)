@@ -8,16 +8,6 @@
 #include "movement.hpp"
 #include "wallFollow.hpp"
 
-//screen
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
-
-#define SCREEN_WIDTH 128 // OLED display width, in pixels
-#define SCREEN_HEIGHT 32 // OLED display height, in pixels
-#define OLED_RESET     -1 // Reset pin # (or -1 if sharing Arduino reset pin)
-#define SCREEN_ADDRESS 0x3C ///< See datasheet for Address; 0x3D for 128x64, 0x3C for 128x32
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-
 // Motor 1 (left)
 #define MOT1PWM 11
 #define MOT1DIR 12
@@ -33,8 +23,6 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 #define SDA A4
 #define SCL A5
 
-
-
 // Motors and encoders
 mtrn3100::Motor motor1(MOT1PWM, MOT1DIR);
 mtrn3100::Encoder encoder1(MOT1_ENCA, MOT1_ENCB);
@@ -46,29 +34,19 @@ mtrn3100::PIDController controller1(150.0, 10.0, 5.0);
 mtrn3100::PIDController controller2(150.0, 10.0, 5.0);
 
 // Distance PID Controller for front lidar
-mtrn3100::PIDController distanceController(2.0, 0.1, 0.5);  // Kp, Ki, Kd for distance control
+mtrn3100::PIDController distanceController(2.0, 0.0, 0.0);  // Kp, Ki, Kd for distance control
 
-// Angle PID Controller for rotation control (from 3.2_angle.ino)
-mtrn3100::PIDController angleController(4.0, 0.0, 0.0);  // Reduced gains to prevent oscillation
+// Angle PID Controller for rotation control (tuned for stability)
+mtrn3100::PIDController angleController(2.0, 0.0, 0.0);  // Reduced gains to prevent oscillation
 
-// --- Custom Angle Tracking & Drift Correction (from 3.2_angle.ino) ---
-float ahrs_angle = 0.0;          // Our manually integrated angle, more robust to drift.
-float gyro_z_bias = 0.0;         // Stores the dynamically calculated gyro bias.
-unsigned long last_update_micros = 0; // For precise dt calculation.
-#define CALIBRATION_SAMPLES 1000 // Number of samples for calibration.
-int sample_count = 0;            // Counter for calibration samples.
-float gyro_z_sum = 0;            // Sum for averaging samples.
-// ---
-
-// Store initial angle - not needed with new logic
-// float initialAngle = 0.0;
+// Store initial angle
+float initialAngle = 0.0;
 size_t currentCommandIndex = 0;
 bool commandInProgress = false;
 unsigned long lastCommandTime = 0;
 const float forwardSpeed = 70.0f;
 float encoder1Start = 0.0;
 float encoder2Start = 0.0;
-
 
 // Wall follow controller
 mtrn3100::WallFollow wallFollow(MOT1PWM, MOT1DIR, MOT2PWM, MOT2DIR, 20.0f, 5.0f, 2.0f);
@@ -78,116 +56,34 @@ void setup() {
     Wire.begin();
     while (!Serial);  // Wait for Serial (if needed)
 
-    // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
-    if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
-    Serial.println(F("SSD1306 allocation failed"));
-    for(;;); // Don't proceed, loop forever
-    }
-
-    // Clear the buffer
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(0,0);
-    display.println(F("Front Lidar Ready"));
-    display.println(F("Distance Display"));
-    display.display();
-    delay(2000);
-  
-
-
     Serial.println("Setup starting...");
 
     setupMPU();           // Initializes MPU
-
-    // --- Initial Gyro Bias Calibration (from 3.2_angle.ino) ---
-    Serial.println("Calibrating Gyro... Keep robot stationary.");
-    display.clearDisplay();
-    display.setCursor(0,0);
-    display.println("Calibrating Gyro");
-    display.println("Please wait...");
-    display.display();
-
-    for (int i = 0; i < CALIBRATION_SAMPLES; i++) {
-        mpu.update();
-        gyro_z_sum += mpu.getGyroZ();
-        delay(2); // Small delay between samples
-    }
-    gyro_z_bias = gyro_z_sum / CALIBRATION_SAMPLES;
-    gyro_z_sum = 0; // Reset for later use
-    sample_count = 0;
-
-    Serial.print("Gyro Z bias calculated: ");
-    Serial.println(gyro_z_bias);
-    display.clearDisplay();
-    display.setCursor(0,0);
-    display.println("Calibration Done!");
-    display.display();
-    delay(1000);
-    // ---
-
     initializeLidars();   // Initializes LIDARs
-    controller1.zeroAndSetTarget(encoder1.getRotation(), 2.0);
-    controller2.zeroAndSetTarget(encoder2.getRotation(), 2.0);
+    controller1.zeroAndSetTarget(encoder1.getRotation(), 0.0);
+    controller2.zeroAndSetTarget(encoder2.getRotation(), 0.0);
     
     // Initialize distance PID controller with target distance of 100mm
     distanceController.zeroAndSetTarget(0, 100.0);  // Target 100mm from front wall
 
     wallFollow.begin();   // Start the wall follow behavior
 
-
     Serial.println("Setup done.");
-    last_update_micros = micros(); // Initialize timer for angle calculation
 }
 
 // Add at top of file
 bool shouldMoveForward = false;
-/* This function is no longer used.
 float angleError(float current, float target) {
     float error = target - current;
     while (error > 180.0f) error -= 360.0f;
     while (error < -180.0f) error += 360.0f;
     return error;
 }
-*/
-
-
-void screen(char command, float value) {
-  display.clearDisplay();
-  display.setCursor(0, 0);
-
-  display.setTextSize(1);
-  display.print("Cmd: ");
-  display.print(command);
-
-  display.setCursor(0, 10);
-  display.setTextSize(1);
-
-  if (command == 'f') {
-    display.print("Distance: ");
-    display.print(value, 1);
-    display.println(" mm");
-  } else if (command == 'l' || command == 'r') {
-    display.print("Angle: ");
-    display.print(value, 1);
-    display.println(" deg");
-  } else {
-    display.print("Idle");
-  }
-
-  display.display();
-}
 
 void loop() {
     mpu.update();
     updateLidars();
-
-    // --- Custom Angle Calculation with Dynamic Bias Correction (from 3.2_angle.ino) ---
-    unsigned long now_micros = micros();
-    float dt = (now_micros - last_update_micros) / 1000000.0f;
-    last_update_micros = now_micros;
-    float gyro_z = mpu.getGyroZ();
-    ahrs_angle += (gyro_z - gyro_z_bias) * dt;
+    currAngle = mpu.getAngleZ();
 
     static float targetAngle = 0.0;
     static unsigned long lastDisplayUpdate = 0;
@@ -200,15 +96,11 @@ void loop() {
             Serial.print("Executing command: ");
             Serial.println(cmd);
 
-            screen(cmd, 0.0f);  // Initial display update
-
             if (cmd == 'l') {
-                targetAngle = ahrs_angle + 90.0;
-                angleController.zeroAndSetTarget(ahrs_angle, targetAngle);
+                targetAngle = currAngle + 90.0;
                 commandInProgress = true;
             } else if (cmd == 'r') {
-                targetAngle = ahrs_angle - 90.0;
-                angleController.zeroAndSetTarget(ahrs_angle, targetAngle);
+                targetAngle = currAngle - 90.0;
                 commandInProgress = true;
             } else if (cmd == 'f') {
                 encoder1Start = encoder1.getDistanceMM();
@@ -223,38 +115,11 @@ void loop() {
             }
         }
 
-        float currentAngle = ahrs_angle;
-        float angleError = targetAngle - currentAngle;
-        float turnSpeed = constrain(angleController.compute(currentAngle), -50.0f, 50.0f);
-
-        // --- Dynamic Gyro Recalibration when Stationary (from 3.2_angle.ino) ---
-        if (commandInProgress && (cmd == 'l' || cmd == 'r') && abs(angleError) < 5.0f && abs(turnSpeed) < 1.0f) {
-            // Robot is stationary, collect samples to refine bias
-            gyro_z_sum += gyro_z;
-            sample_count++;
-            if (sample_count >= 200) { // Update bias every 200 samples
-                gyro_z_bias = gyro_z_sum / sample_count;
-                // Slowly correct ahrs_angle to prevent accumulated error while stationary
-                ahrs_angle = ahrs_angle * 0.98 + targetAngle * 0.02;
-                sample_count = 0; // Reset for next averaging cycle
-                gyro_z_sum = 0;
-            }
-        } else {
-            // Robot is moving, reset the calibration sample count
-            sample_count = 0;
-            gyro_z_sum = 0;
-        }
-
         // Turn left
         if (commandInProgress && cmd == 'l') {
-            if (now - lastDisplayUpdate >= 100) {
-                screen(cmd, currentAngle);
-                lastDisplayUpdate = now;
-            }
-
-            if (abs(angleError) > 3.0f) {
-                motor1.setPWM(turnSpeed);
-                motor2.setPWM(turnSpeed);
+            if (angleError(currAngle, targetAngle) > 3.0f) {
+                motor1.setPWM(forwardSpeed * 0.5);
+                motor2.setPWM(forwardSpeed * 0.5);
             } else {
                 motor1.setPWM(0);
                 motor2.setPWM(0);
@@ -265,14 +130,9 @@ void loop() {
 
         // Turn right
         else if (commandInProgress && cmd == 'r') {
-            if (now - lastDisplayUpdate >= 100) {
-                screen(cmd, currentAngle);
-                lastDisplayUpdate = now;
-            }
-
-            if (abs(angleError) > 3.0f) {
-                motor1.setPWM(turnSpeed);
-                motor2.setPWM(turnSpeed);
+            if (angleError(currAngle, targetAngle) < -3.0f) {
+                motor1.setPWM(-forwardSpeed * 0.5);
+                motor2.setPWM(-forwardSpeed * 0.5);
             } else {
                 motor1.setPWM(0);
                 motor2.setPWM(0);
@@ -282,13 +142,10 @@ void loop() {
         }
 
         // Move forward
-       else if (commandInProgress && cmd == 'f') {
+        else if (commandInProgress && cmd == 'f') {
             float rawDistance = encoder2Start - encoder2.getDistanceMM();  // positive increasing distance
 
             if (now - lastDisplayUpdate >= 100) {
-                screen(cmd, rawDistance);
-                lastDisplayUpdate = now;
-
                 Serial.print("Raw Distance (Encoder2): ");
                 Serial.println(rawDistance, 1);
                 Serial.print("Encoder2.get(): ");
@@ -297,17 +154,17 @@ void loop() {
                 Serial.println(encoder2Start, 1);
                 Serial.print("Encoder1 (mm): ");
                 Serial.println(encoder1.getDistanceMM(), 1);
-
                 Serial.print("Encoder2 (mm): ");
                 Serial.println(encoder2.getDistanceMM(), 1);
-
+                lastDisplayUpdate = now;
             }
+
             if (distFront < 105.00) {
                 motor1.setPWM(0);
                 motor2.setPWM(0);
                 commandInProgress = false;
                 currentCommandIndex++;
-                if(currentCommandIndex > comm.length()) {
+                if (currentCommandIndex > comm.length()) {
                     motor1.setPWM(0);
                     motor2.setPWM(0);
                 }
@@ -322,16 +179,12 @@ void loop() {
                 commandInProgress = false;
                 currentCommandIndex++;
             }
-    } else {
-        if (now - lastDisplayUpdate >= 500) {  // Idle update slower
-            screen('-', 0.0f);
-            lastDisplayUpdate = now;
+        } else {
+            if (now - lastDisplayUpdate >= 500) {  // Idle update slower
+                lastDisplayUpdate = now;
+            }
         }
-    }
 
-    printLidarReadings();
+        printLidarReadings();
     }
 }
-
-
-
