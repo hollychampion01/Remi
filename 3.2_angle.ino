@@ -52,6 +52,16 @@ mtrn3100::PIDController controller2(150.0, 10.0, 5.0);
 // Angle PID Controller for rotation control (tuned for stability)
 mtrn3100::PIDController angleController(4.0, 0.0, 0.0);  // Reduced gains to prevent oscillation
 
+// --- Custom Angle Tracking & Drift Correction ---
+float ahrs_angle = 0.0;          // Our manually integrated angle, more robust to drift.
+float gyro_z_bias = 0.0;         // Stores the dynamically calculated gyro bias.
+unsigned long last_update_micros = 0; // For precise dt calculation.
+bool is_calibrating = true;      // Flag to control initial calibration.
+#define CALIBRATION_SAMPLES 1000 // Number of samples for calibration.
+int sample_count = 0;            // Counter for calibration samples.
+float gyro_z_sum = 0;            // Sum for averaging samples.
+// ---
+
 // Store initial angle
 float initialAngle = 0.0;
 
@@ -88,27 +98,45 @@ void setup() {
     Serial.println("Setup starting...");
 
     setupMPU();           // Initializes MPU
+    
+    // --- Initial Gyro Bias Calibration ---
+    Serial.println("Calibrating Gyro... Keep robot stationary.");
+    display.clearDisplay();
+    display.setCursor(0,0);
+    display.println("Calibrating Gyro");
+    display.println("Please wait...");
+    display.display();
+
+    for (int i = 0; i < CALIBRATION_SAMPLES; i++) {
+        mpu.update();
+        gyro_z_sum += mpu.getGyroZ();
+        delay(2); // Small delay between samples
+    }
+    gyro_z_bias = gyro_z_sum / CALIBRATION_SAMPLES;
+    gyro_z_sum = 0; // Reset for later use
+    sample_count = 0;
+
+    Serial.print("Gyro Z bias calculated: ");
+    Serial.println(gyro_z_bias);
+    display.clearDisplay();
+    display.setCursor(0,0);
+    display.println("Calibration Done!");
+    display.display();
+    delay(1000);
+    // ---
+
     initializeLidars();   // Initializes LIDARs
     controller1.zeroAndSetTarget(encoder1.getRotation(), 2.0);
     controller2.zeroAndSetTarget(encoder2.getRotation(), 2.0);
     
-    // Capture initial angle after MPU setup
-    delay(500);  // Let MPU stabilize
-    mpu.update();
-    float startAngle = mpu.getAngleZ();
-    // initialAngle = startAngle + 90.0;  // Target angle is 90 degrees from start
-    initialAngle = 90.0;  // Target angle is 90 degrees from start
-    Serial.print("Start angle: ");
-    Serial.print(startAngle);
-    Serial.print(" | Target angle: ");
-    Serial.println(initialAngle);
-    
-    // Initialize angle PID controller to target 90 degrees from start
-    angleController.zeroAndSetTarget(startAngle, initialAngle);  // Target: turn 90 degrees
+    // Set target angle to 90 degrees. Our internal angle starts at 0.
+    initialAngle = 90.0;
+    angleController.zeroAndSetTarget(0.0, initialAngle);
 
     wallFollow.begin();   // Start the wall follow behavior
 
     Serial.println("Setup done.");
+    last_update_micros = micros(); // Initialize timer for angle calculation
 }
 
 // Add at top of file
@@ -118,27 +146,47 @@ bool shouldMoveForward = false;
 
 void loop() {
   mpu.update();
-  updateLidars();
+
+  // --- Custom Angle Calculation with Dynamic Bias Correction ---
+  unsigned long now = micros();
+  float dt = (now - last_update_micros) / 1000000.0f;
+  last_update_micros = now;
+  float gyro_z = mpu.getGyroZ();
+  ahrs_angle += (gyro_z - gyro_z_bias) * dt;
 
   // --- PID ANGLE CONTROL ---
-  float currentAngle = mpu.getAngleZ();
-  float angleError = angleController.compute(currentAngle);
-  float turnSpeed = constrain(angleError, -80.0f, 80.0f);  // Reduced max speed for stability
+  float currentAngle = ahrs_angle; // Use our robust angle
+  float angleError = initialAngle - currentAngle; // Error is Target - Current
+  float turnSpeed = constrain(angleController.compute(currentAngle), -80.0f, 80.0f);
+
+  // --- Dynamic Gyro Recalibration when Stationary ---
+  // If the robot is supposed to be still (low error and low motor output),
+  // any detected rotation is drift. We re-calculate the bias.
+  if (abs(angleError) < 5.0f && abs(turnSpeed) < 1.0f) {
+      // Robot is stationary, collect samples to refine bias
+      gyro_z_sum += gyro_z;
+      sample_count++;
+      if (sample_count >= 200) { // Update bias every 200 samples
+          gyro_z_bias = gyro_z_sum / sample_count;
+          // Slowly correct ahrs_angle to prevent accumulated error while stationary
+          ahrs_angle = ahrs_angle * 0.98 + initialAngle * 0.02;
+          sample_count = 0; // Reset for next averaging cycle
+          gyro_z_sum = 0;
+      }
+  } else {
+      // Robot is moving, reset the calibration sample count
+      sample_count = 0;
+      gyro_z_sum = 0;
+  }
   
   if (abs(angleError) > 3.0f) {
-    // Apply PID-controlled rotation to return to initial angle
-    // if (abs(turnSpeed) > 15.0f) {  // Larger dead zone to prevent oscillation
-      // Differential steering: positive turnSpeed = turn right, negative = turn left
-      motor1.setPWM(turnSpeed);   // Left motor
-      motor2.setPWM(turnSpeed);   // Right motor (same direction for rotation)
-    // } else {
-    //   motor1.setPWM(0);
-    //   motor2.setPWM(0);
-    // }
-} else {
+    // Apply PID-controlled rotation
+    motor1.setPWM(turnSpeed);
+    motor2.setPWM(turnSpeed);
+  } else {
     motor1.setPWM(0);
     motor2.setPWM(0);
-}
+  }
 
   // Update PID
   float pos1 = encoder1.getRotation();
@@ -149,22 +197,23 @@ void loop() {
   // Optional: Debug output
   Serial.print("Current: "); Serial.print(currentAngle, 2);
   Serial.print(" | Target: "); Serial.print(initialAngle, 2);
-  Serial.print(" | Error: "); Serial.print(currentAngle - initialAngle, 2);
-  Serial.print(" | Turn Speed: "); Serial.println(turnSpeed, 1);
+  Serial.print(" | Error: "); Serial.print(angleError, 2);
+  Serial.print(" | Turn Speed: "); Serial.print(turnSpeed, 1);
+  Serial.print(" | Bias: "); Serial.println(gyro_z_bias, 4);
 
   // Wall following logic
   //handleWallDetection();
   // If this delay is too long, getZ may not be update frequently enough as controller is doing nothing as CPU is doing nothing
   // Should we use timing control aka millis
-  delay(30);  // Slower update rate for stability (10Hz instead of 20Hz)
+  delay(10);  // Can reduce delay as our loop is more controlled now
   screen();
 }
 
 /// for OLED display
 void screen() {
-  // Read current Z angle from MPU
-  float currentAngle = mpu.getAngleZ();
-  float error = currentAngle - initialAngle;
+  // Read current Z angle from our robust calculation
+  float currentAngle = ahrs_angle;
+  float error = initialAngle - currentAngle;
 
   // Clear display
   display.clearDisplay();
