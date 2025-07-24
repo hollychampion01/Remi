@@ -38,6 +38,12 @@ public:
 
         interrupts();
     }
+    float getDistanceMM() {
+        const float wheelDiameterMM = 32.0f;
+        const float wheelCircumferenceMM = wheelDiameterMM * 3.1416;
+        return getRotation() * wheelCircumferenceMM;
+    }
+
 
     // Convert encoder count to radians
     float getRotation() {
