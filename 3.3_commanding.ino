@@ -56,7 +56,10 @@ float initialAngle = 0.0;
 size_t currentCommandIndex = 0;
 bool commandInProgress = false;
 unsigned long lastCommandTime = 0;
-const float forwardSpeed = 100.0f;
+const float forwardSpeed = 70.0f;
+float encoder1Start = 0.0;
+float encoder2Start = 0.0;
+
 
 // Wall follow controller
 mtrn3100::WallFollow wallFollow(MOT1PWM, MOT1DIR, MOT2PWM, MOT2DIR, 20.0f, 5.0f, 2.0f);
@@ -66,21 +69,21 @@ void setup() {
     Wire.begin();
     while (!Serial);  // Wait for Serial (if needed)
 
-    // // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
-    // if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
-    // Serial.println(F("SSD1306 allocation failed"));
-    // for(;;); // Don't proceed, loop forever
-    // }
+    // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
+    if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
+    Serial.println(F("SSD1306 allocation failed"));
+    for(;;); // Don't proceed, loop forever
+    }
 
-    // // Clear the buffer
-    // display.clearDisplay();
-    // display.setTextSize(1);
-    // display.setTextColor(SSD1306_WHITE);
-    // display.setCursor(0,0);
-    // display.println(F("Front Lidar Ready"));
-    // display.println(F("Distance Display"));
-    // display.display();
-    // delay(2000);
+    // Clear the buffer
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0,0);
+    display.println(F("Front Lidar Ready"));
+    display.println(F("Distance Display"));
+    display.display();
+    delay(2000);
   
 
 
@@ -96,13 +99,45 @@ void setup() {
 
     wallFollow.begin();   // Start the wall follow behavior
 
+
     Serial.println("Setup done.");
 }
 
 // Add at top of file
 bool shouldMoveForward = false;
+float angleError(float current, float target) {
+    float error = target - current;
+    while (error > 180.0f) error -= 360.0f;
+    while (error < -180.0f) error += 360.0f;
+    return error;
+}
 
 
+void screen(char command, float value) {
+  display.clearDisplay();
+  display.setCursor(0, 0);
+
+  display.setTextSize(1);
+  display.print("Cmd: ");
+  display.print(command);
+
+  display.setCursor(0, 10);
+  display.setTextSize(1);
+
+  if (command == 'f') {
+    display.print("Distance: ");
+    display.print(value, 1);
+    display.println(" mm");
+  } else if (command == 'l' || command == 'r') {
+    display.print("Angle: ");
+    display.print(value, 1);
+    display.println(" deg");
+  } else {
+    display.print("Idle");
+  }
+
+  display.display();
+}
 
 void loop() {
     mpu.update();
@@ -110,6 +145,8 @@ void loop() {
     currAngle = mpu.getAngleZ();
 
     static float targetAngle = 0.0;
+    static unsigned long lastDisplayUpdate = 0;
+    unsigned long now = millis();
 
     if (currentCommandIndex < comm.length()) {
         char cmd = comm.charAt(currentCommandIndex);
@@ -118,19 +155,20 @@ void loop() {
             Serial.print("Executing command: ");
             Serial.println(cmd);
 
-            screen(cmd);
+            screen(cmd, 0.0f);  // Initial display update
 
             if (cmd == 'l') {
-                targetAngle = currAngle + 87.0;
+                targetAngle = currAngle + 90.0;
                 commandInProgress = true;
             } else if (cmd == 'r') {
-                targetAngle = currAngle - 87.0;
+                targetAngle = currAngle - 90.0;
                 commandInProgress = true;
             } else if (cmd == 'f') {
+                encoder1Start = encoder1.getDistanceMM();
+                encoder2Start = encoder2.getDistanceMM();
                 motor1.setPWM(forwardSpeed);
                 motor2.setPWM(-forwardSpeed);
                 commandInProgress = true;
-                lastCommandTime = millis();
             } else {
                 Serial.print("Unknown command: ");
                 Serial.println(cmd);
@@ -138,72 +176,93 @@ void loop() {
             }
         }
 
-        // Handle turning left/right
-        if (commandInProgress && (cmd == 'l')) {
-            if (currAngle < targetAngle) {
-                motor1.setPWM(forwardSpeed);
-                motor2.setPWM(forwardSpeed);
+        // Turn left
+        if (commandInProgress && cmd == 'l') {
+            if (now - lastDisplayUpdate >= 100) {
+                screen(cmd, currAngle);
+                lastDisplayUpdate = now;
+            }
+
+            if (angleError(currAngle, targetAngle) > 3.0f) {
+                motor1.setPWM(forwardSpeed*0.5);
+                motor2.setPWM(forwardSpeed*0.5);
             } else {
                 motor1.setPWM(0);
                 motor2.setPWM(0);
                 commandInProgress = false;
                 currentCommandIndex++;
-                delay(100);  // Small delay to settle
             }
-        } else if (commandInProgress && (cmd == 'r')) {
-            if (currAngle > targetAngle) {
-                motor1.setPWM(-forwardSpeed);
+        }
+
+        // Turn right
+        else if (commandInProgress && cmd == 'r') {
+            if (now - lastDisplayUpdate >= 100) {
+                screen(cmd, currAngle);
+                lastDisplayUpdate = now;
+            }
+
+            if (angleError(currAngle, targetAngle) < -3.0f) {
+                motor1.setPWM(-forwardSpeed*0.5);
+                motor2.setPWM(-forwardSpeed*0.5);
+            } else {
+                motor1.setPWM(0);
+                motor2.setPWM(0);
+                commandInProgress = false;
+                currentCommandIndex++;
+            }
+        }
+
+        // Move forward
+       else if (commandInProgress && cmd == 'f') {
+            float rawDistance = encoder2Start - encoder2.getDistanceMM();  // positive increasing distance
+
+            if (now - lastDisplayUpdate >= 100) {
+                screen(cmd, rawDistance);
+                lastDisplayUpdate = now;
+
+                Serial.print("Raw Distance (Encoder2): ");
+                Serial.println(rawDistance, 1);
+                Serial.print("Encoder2.get(): ");
+                Serial.print(encoder2.getDistanceMM(), 1);
+                Serial.print(" | Start: ");
+                Serial.println(encoder2Start, 1);
+                Serial.print("Encoder1 (mm): ");
+                Serial.println(encoder1.getDistanceMM(), 1);
+
+                Serial.print("Encoder2 (mm): ");
+                Serial.println(encoder2.getDistanceMM(), 1);
+
+            }
+            if (distFront < 105.00) {
+                motor1.setPWM(0);
+                motor2.setPWM(0);
+                commandInProgress = false;
+                currentCommandIndex++;
+                if(currentCommandIndex > comm.length()) {
+                    motor1.setPWM(0);
+                    motor2.setPWM(0);
+                }
+            }
+
+            if (rawDistance < 1800.0f) {
+                motor1.setPWM(forwardSpeed);
                 motor2.setPWM(-forwardSpeed);
             } else {
                 motor1.setPWM(0);
                 motor2.setPWM(0);
                 commandInProgress = false;
                 currentCommandIndex++;
-                delay(100);
             }
-        }
-
-        // Handle forward move by time
-        else if (commandInProgress && (cmd == 'f')) {
-            if (millis() - lastCommandTime >= commandDelay) {
-                motor1.setPWM(0);
-                motor2.setPWM(0);
-                commandInProgress = false;
-                currentCommandIndex++;
-                delay(100);
-            }
-        }
-
     } else {
-        screen('-');  // Command sequence done
+        if (now - lastDisplayUpdate >= 500) {  // Idle update slower
+            screen('-', 0.0f);
+            lastDisplayUpdate = now;
+        }
     }
 
     printLidarReadings();
-    delay(10);
+    }
 }
 
 
 
-/// for OLED display
-void screen(char command) {
-  // Read front distance
-  uint8_t distance = distFront;
-
-  // Clear display
-  display.clearDisplay();
-
-  //setting position of text
-  display.setCursor(0, 0);
-
-  display.setTextSize(1);
-  display.print("Cmd: ");
-  display.print(command);
-  display.setCursor(0, 10);
-
-   display.setTextSize(1);
-   display.print("Current: ");
-   display.print(currAngle, 1);
-   display.println(" deg");
-
-   display.display();
-}
