@@ -157,7 +157,7 @@ void loop() {
   // --- PID ANGLE CONTROL ---
   float currentAngle = ahrs_angle; // Use our robust angle
   float angleError = initialAngle - currentAngle; // Error is Target - Current
-  float turnSpeed = constrain(angleController.compute(currentAngle), -80.0f, 80.0f);
+  float turnSpeed = constrain(angleController.compute(currentAngle), -50.0f, 50.0f);
 
   // --- Dynamic Gyro Recalibration when Stationary ---
   // If the robot is supposed to be still (low error and low motor output),
