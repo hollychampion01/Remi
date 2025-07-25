@@ -74,6 +74,7 @@ mtrn3100::WallFollow wallFollow(MOT1PWM, MOT1DIR, MOT2PWM, MOT2DIR, 20.0f, 5.0f,
 
 void setup() {
     Serial.begin(9600);
+    Serial.println("Ok");
     Wire.begin();
     while (!Serial);  // Wait for Serial (if needed)
 
@@ -126,11 +127,11 @@ void setup() {
     // ---
 
     initializeLidars();   // Initializes LIDARs
-    controller1.zeroAndSetTarget(encoder1.getRotation(), 2.0);
-    controller2.zeroAndSetTarget(encoder2.getRotation(), 2.0);
+    controller1.zeroAndSetTarget(encoder1.getRotation(), 0.0);
+    controller2.zeroAndSetTarget(encoder2.getRotation(), 0.0);
     
     // Set target angle to 90 degrees. Our internal angle starts at 0.
-    initialAngle = 90.0;
+    initialAngle = -90.0;
     angleController.zeroAndSetTarget(0.0, initialAngle);
 
     wallFollow.begin();   // Start the wall follow behavior
