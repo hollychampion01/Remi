@@ -46,10 +46,10 @@ mtrn3100::PIDController controller1(150.0, 10.0, 5.0);
 mtrn3100::PIDController controller2(150.0, 10.0, 5.0);
 
 // Distance PID Controller for front lidar
-mtrn3100::PIDController distanceController(2.0, 0.1, 0.5);  // Kp, Ki, Kd for distance control
+mtrn3100::PIDController distanceController(2.0, 0.0, 0.0);  // Kp, Ki, Kd for distance control
 
 // Angle PID Controller for rotation control (tuned for stability)
-mtrn3100::PIDController angleController(1.0, 0.05, 0.2);  // Reduced gains to prevent oscillation
+mtrn3100::PIDController angleController(2.0, 0.00, 0.0);  // Reduced gains to prevent oscillation
 
 // Store initial angle
 float initialAngle = 0.0;
@@ -91,8 +91,8 @@ void setup() {
 
     setupMPU();           // Initializes MPU
     initializeLidars();   // Initializes LIDARs
-    controller1.zeroAndSetTarget(encoder1.getRotation(), 2.0);
-    controller2.zeroAndSetTarget(encoder2.getRotation(), 2.0);
+    controller1.zeroAndSetTarget(encoder1.getRotation(), 0.0);
+    controller2.zeroAndSetTarget(encoder2.getRotation(), 0.0);
     
     // Initialize distance PID controller with target distance of 100mm
     distanceController.zeroAndSetTarget(0, 100.0);  // Target 100mm from front wall
@@ -233,18 +233,7 @@ void loop() {
                 Serial.println(encoder2.getDistanceMM(), 1);
 
             }
-            if (distFront < 105.00) {
-                motor1.setPWM(0);
-                motor2.setPWM(0);
-                commandInProgress = false;
-                currentCommandIndex++;
-                if(currentCommandIndex > comm.length()) {
-                    motor1.setPWM(0);
-                    motor2.setPWM(0);
-                }
-            }
-
-            if (rawDistance < 1800.0f) {
+            if (distFront > 68.00) {
                 motor1.setPWM(forwardSpeed);
                 motor2.setPWM(-forwardSpeed);
             } else {
@@ -252,8 +241,24 @@ void loop() {
                 motor2.setPWM(0);
                 commandInProgress = false;
                 currentCommandIndex++;
+                if(currentCommandIndex == comm.length()) {
+                    motor1.setPWM(0);
+                    motor2.setPWM(0);
+                }
             }
+
+            // if (rawDistance < 2000.0f) {
+            //     motor1.setPWM(forwardSpeed);
+            //     motor2.setPWM(-forwardSpeed);
+            // } else {
+            //     motor1.setPWM(0);
+            //     motor2.setPWM(0);
+            //     commandInProgress = false;
+            //     currentCommandIndex++;
+            // }
     } else {
+        motor1.setPWM(0);
+        motor2.setPWM(0);
         if (now - lastDisplayUpdate >= 500) {  // Idle update slower
             screen('-', 0.0f);
             lastDisplayUpdate = now;
@@ -263,6 +268,3 @@ void loop() {
     printLidarReadings();
     }
 }
-
-
-
