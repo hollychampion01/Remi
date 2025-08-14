@@ -17,4 +17,4 @@ int pwm2 = 0;
 float currAngle = 0;
 float currPos = 0;
 
-const String comm = "flffrfrf";
+const String comm = "fffflflfffffrflfrfrflflfrfrflffrffflfrffrflfrffffffrr";
