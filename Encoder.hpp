@@ -1,5 +1,4 @@
 #pragma once
-
 #include <Arduino.h>
 #include "global.hpp"
 
@@ -7,72 +6,77 @@ namespace mtrn3100 {
 
 class Encoder {
 public:
-    Encoder(uint8_t enc1, uint8_t enc2) 
-        : encoder1_pin(enc1), encoder2_pin(enc2) {
+  // encA must be an interrupt-capable pin (2 or 3 on Uno).
+  // cpr = counts-per-wheel-rev (NOT motor shaft). Include gearbox * encoder PPR * x4 if using full quadrature.
+  Encoder(uint8_t encA, uint8_t encB, uint16_t cpr = 360)
+  : encoder1_pin(encA), encoder2_pin(encB), counts_per_revolution(cpr) {
 
-        instance = this;  // Store static instance pointer
+    pinMode(encoder1_pin, INPUT_PULLUP);
+    pinMode(encoder2_pin, INPUT_PULLUP);
 
-        pinMode(encoder1_pin, INPUT_PULLUP);
-        pinMode(encoder2_pin, INPUT_PULLUP);
+    uint8_t intNum = digitalPinToInterrupt(encoder1_pin);
+    // Map this instance to the correct interrupt and attach a dedicated ISR
+    if (intNum == 0) { enc0 = this; attachInterrupt(0, isr0, CHANGE); }
+    else if (intNum == 1) { enc1 = this; attachInterrupt(1, isr1, CHANGE); }
+    // If you use other boards with more INTs, extend this mapping accordingly.
+  }
 
-        // Attach interrupt on encoder1_pin (must be interrupt-capable)
-        // We assume enc1 is either pin 2 or pin 3 on Arduino Uno
-        uint8_t interruptNum = digitalPinToInterrupt(encoder1_pin);
-        if (interruptNum != NOT_AN_INTERRUPT) {
-            attachInterrupt(interruptNum, readEncoderISR, RISING);
-        }
+  // --- Safe atomic read of count for use in loop/printing ---
+  long getCount() const {
+    noInterrupts();
+    long c = count;
+    interrupts();
+    return c;
+  }
 
-        counts_per_revolution = 360; // ⚠️ Set according to your actual encoder
-    }
+  // Distance in mm (counts → rotations → distance). No extra 2π here.
+  float getDistanceMM() const {
+    const float wheelDiameterMM = 32.0f;
+    const float wheelCircumferenceMM = wheelDiameterMM * 3.1416f;
+    long c = getCount();
+    return (static_cast<float>(c) * wheelCircumferenceMM) / counts_per_revolution;
+  }
 
-    // This is called by the interrupt
-    void readEncoder() {
-        noInterrupts();
+  // If you really want radians, compute from counts directly
+  float getRotation() const { // radians of the wheel
+    long c = getCount();
+    return (2.0f * PI * static_cast<float>(c)) / counts_per_revolution;
+  }
 
-        // Determine direction using encoder2_pin
-        if (digitalRead(encoder2_pin) == HIGH) {
-            count++;
-        } else {
-            count--;
-        }
+  void reset() {
+    noInterrupts();
+    count = 0;
+    interrupts();
+  }
 
-        interrupts();
-    }
-    float getDistanceMM() {
-        const float wheelDiameterMM = 32.0f;
-        const float wheelCircumferenceMM = wheelDiameterMM * 3.1416;
-        return getRotation() * wheelCircumferenceMM;
-    }
-
-
-    // Convert encoder count to radians
-    float getRotation() {
-        return (2.0f * PI * count) / counts_per_revolution;
-    }
-
-private:
-    // Static ISR trampoline function
-    static void readEncoderISR() {
-        if (instance != nullptr) {
-            instance->readEncoder();
-        }
-    }
-
-public:
-    const uint8_t encoder1_pin;
-    const uint8_t encoder2_pin;
-    volatile int8_t direction = 0;
-    float position = 0;
-    uint16_t counts_per_revolution = 360;
-    volatile long count = 0;
-    uint32_t prev_time = 0;
-    bool read = false;
+  // Expose pins if you need for diagnostics
+  const uint8_t encoder1_pin; // channel A (interrupt)
+  const uint8_t encoder2_pin; // channel B (direction)
+  volatile long count = 0;
+  uint16_t counts_per_revolution;
 
 private:
-    static Encoder* instance;
+  // Called on any change of channel A for this instance
+  inline void onAChange() {
+    // Determine direction from THIS encoder's B channel
+    // If your direction is reversed, swap ++/-- below.
+    if (digitalRead(encoder2_pin) == HIGH) {
+      count++;
+    } else {
+      count--;
+    }
+  }
+
+  // Per-interrupt static trampolines (Uno: INT0=pin2, INT1=pin3)
+  static void isr0() { if (enc0) enc0->onAChange(); }
+  static void isr1() { if (enc1) enc1->onAChange(); }
+
+  static Encoder* enc0;
+  static Encoder* enc1;
 };
 
-// Static member initialization
-Encoder* Encoder::instance = nullptr;
+// Static member definitions
+Encoder* Encoder::enc0 = nullptr;
+Encoder* Encoder::enc1 = nullptr;
 
-}  // namespace mtrn3100
+} // namespace mtrn3100
