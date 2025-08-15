@@ -61,6 +61,8 @@ const float forwardSpeedRight = 100.0f;
 const float forwardSpeedLeft = 98.0f;
 float encoder1Start = 0.0;
 float encoder2Start = 0.0;
+float LeftSpeed = 0;
+float RightSpeed = 0;
 
 // Left wheel needs to be slower
 
@@ -245,21 +247,8 @@ void loop() {
 
             // This could be way too simple but if it keeps looping through my thoughts are that it would only jump into this loop when needed?
             // Sorry hard to test without Remi - can look at it tomorrow
-            if (distLeft < 30) {
-                LeftSpeed = forwardSpeedLeft + 30;
-                RightSpeed = forwardSpeedRight - 30;
-                motor1.setPWM(LeftSpeed);
-                motor2.setPWM(-RightSpeed);
-            }
 
-            if (distRight < 30) {
-                forwardSpeedLeft -= 30;
-                forwardSpeedRight += 30;
-                motor1.setPWM(forwardSpeedRight);
-                motor2.setPWM(-forwardSpeedLeft);
-            }
-
-            if (rawDistance < 1700.0f) {
+            if (rawDistance < 1600.0f) {
                 motor1.setPWM(forwardSpeedRight);
                 motor2.setPWM(-forwardSpeedLeft);
                 if (distFront < 105.00) {
@@ -267,11 +256,24 @@ void loop() {
                     motor2.setPWM(0);
                     commandInProgress = false;
                     currentCommandIndex++;
-                    if (currentCommandIndex > comm.length()) {
-                        motor1.setPWM(0);
-                        motor2.setPWM(0);
                 }
-            }
+                if (distLeft < 30) {
+                    LeftSpeed = (forwardSpeedLeft + 30)*0.5;
+                    RightSpeed = (forwardSpeedRight - 30)*0.5;
+                    motor1.setPWM(RightSpeed);
+                    motor2.setPWM(-LeftSpeed);
+                }
+
+                if (distRight < 30) {
+                    LeftSpeed = (forwardSpeedLeft - 30)*0.5;
+                    RightSpeed = (forwardSpeedRight + 30)*0.5;
+                    motor1.setPWM(RightSpeed);
+                    motor2.setPWM(-LeftSpeed);
+                }
+                if (currentCommandIndex > comm.length()) {
+                    motor1.setPWM(0);
+                    motor2.setPWM(0);
+                }
             } else {
                 // motor1.setPWM(0);
                 // motor2.setPWM(0);
