@@ -1,0 +1,20 @@
+# Task 1.2 (4 Marks): Process occupancy map add and display configuration space
+
+cropped_blur = cv2.medianBlur(cropped, 3)
+binary_obstacles = cv2.adaptiveThreshold(
+    cropped_blur, 255,
+    cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV,
+    51, 16
+)
+
+# _, binary_obstacles = cv2.threshold(cropped, threshold_value, 255, cv2.THRESH_BINARY_INV)
+
+# Keep the rest the same
+kernel = np.ones((unsafe_kernel_size, unsafe_kernel_size), np.uint8)
+expanded_obstacles = cv2.dilate(binary_obstacles, kernel, iterations=unsafe_iterations)
+buffer_zone = cv2.subtract(expanded_obstacles, binary_obstacles)
+
+colour_image = cv2.cvtColor(cropped, cv2.COLOR_GRAY2RGB)
+colour_image[buffer_zone == 255] = [255, 0, 0]
+
+plt.imshow(colour_image); plt.show()
