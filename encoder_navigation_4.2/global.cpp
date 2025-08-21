@@ -30,3 +30,4 @@ String instructions[] = {
 
 // Manually track the number of instructions
 const size_t numInstructions = sizeof(instructions) / sizeof(instructions[0]);
+const String comm = "";
