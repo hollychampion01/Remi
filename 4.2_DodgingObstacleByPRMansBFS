@@ -1,0 +1,282 @@
+#include "global.hpp"
+#include "Motor.hpp"
+#include "Encoder.hpp"
+#include "PIDController.hpp"
+#include "lidar.hpp"
+#include "mpu.hpp"
+
+//screen
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 32 // OLED display height, in pixels
+#define OLED_RESET     -1 // Reset pin # (or -1 if sharing Arduino reset pin)
+#define SCREEN_ADDRESS 0x3C ///< See datasheet for Address; 0x3D for 128x64, 0x3C for 128x32
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// Motor 1 (left)
+#define MOT1PWM 11
+#define MOT1DIR 12
+#define MOT1_ENCA 2
+#define MOT1_ENCB 6
+
+// Motor 2 (right)
+#define MOT2PWM 9
+#define MOT2DIR 10
+#define MOT2_ENCA 3
+#define MOT2_ENCB 7
+
+#define SDA A4
+#define SCL A5
+
+// Motors and encoders
+mtrn3100::Motor motor1(MOT1PWM, MOT1DIR);
+mtrn3100::Encoder encoder1(MOT1_ENCA, MOT1_ENCB);
+mtrn3100::Motor motor2(MOT2PWM, MOT2DIR);
+mtrn3100::Encoder encoder2(MOT2_ENCA, MOT2_ENCB);
+
+// Controllers (not used directly here, but kept for completeness)
+mtrn3100::PIDController controller1(150.0, 10.0, 5.0);
+mtrn3100::PIDController controller2(150.0, 10.0, 5.0);
+
+// Distance PID Controller for front lidar
+mtrn3100::PIDController distanceController(2.0, 0.0, 0.0);  // Kp, Ki, Kd for distance control
+
+// Angle PID Controller for rotation control (tuned for stability)
+mtrn3100::PIDController angleController(2.0, 0.00, 0.0);  // Reduced gains to prevent oscillation
+
+// Store initial angle
+float initialAngle = 0.0;
+size_t currentCommandIndex = 0;
+bool commandInProgress = false;
+unsigned long lastCommandTime = 0;
+
+const float forwardSpeedRight = 100.0f;
+const float forwardSpeedLeft  = 98.0f;
+float encoder1Start = 0.0;
+float encoder2Start = 0.0;
+float LeftSpeed = 0;
+float RightSpeed = 0;
+
+// Wall follow controller
+
+// NEW: defaults and skip thresholds for fx/lx/rx
+const float DEFAULT_FWD_MM   = 180.0f;  // plain 'f'
+const float DEFAULT_TURN_DEG = 90.0f;   // plain 'l'/'r'
+const float SKIP_FWD_MM      = 5.0f;    // skip tiny forward if number is provided
+const float SKIP_TURN_DEG    = 3.0f;    // skip tiny turn if number is provided
+
+// NEW: per-command targets + index to jump after digits
+static float targetAngle = 0.0f;
+static float targetForwardMM = DEFAULT_FWD_MM;
+static size_t nextIndexAfterToken = 0;
+
+void setup() {
+    Serial.begin(9600);
+    Wire.begin();
+    while (!Serial);  // Wait for Serial (if needed)
+
+    Serial.println("Setup starting...");
+
+    setupMPU();           // Initializes MPU
+    initializeLidars();   // Initializes LIDARs
+    controller1.zeroAndSetTarget(encoder1.getRotation(), 0.0);
+    controller2.zeroAndSetTarget(encoder2.getRotation(), 0.0);
+    
+    // Initialize distance PID controller with target distance of 100mm
+    distanceController.zeroAndSetTarget(0, 100.0);  // Target 100mm from front wall
+
+    Serial.println("Setup done.");
+}
+
+
+// Add at top of file
+bool shouldMoveForward = false;
+float angleError(float current, float target) {
+    float error = target - current;
+    while (error > 180.0f) error -= 360.0f;
+    while (error < -180.0f) error += 360.0f;
+    return error;
+}
+
+// void screen(...) { ... }  // (kept commented out)
+
+void loop() {
+    mpu.update();
+    updateLidars();
+    currAngle = mpu.getAngleZ();
+
+    static unsigned long lastDisplayUpdate = 0;
+    unsigned long now = millis();
+
+    if (currentCommandIndex < comm.length()) {
+        char cmd = comm.charAt(currentCommandIndex);
+
+        if (!commandInProgress) {
+            Serial.print("Executing command: ");
+            Serial.println(cmd);
+
+            // NEW: parse optional number after command letter (fx, lx, rx)
+            size_t i = currentCommandIndex + 1;
+            String numStr = "";
+            while (i < comm.length() && isDigit(comm.charAt(i))) {
+                numStr += comm.charAt(i);
+                i++;
+            }
+            nextIndexAfterToken = i;  // remember where to jump after this command completes
+
+            if (cmd == 'l') {
+                // numeric angle (if any)
+                bool hasNum = (numStr.length() > 0);
+                float ang = hasNum ? numStr.toFloat() : DEFAULT_TURN_DEG;
+
+                // skip tiny turns only if a number was provided
+                if (hasNum && ang < SKIP_TURN_DEG) {
+                    currentCommandIndex = nextIndexAfterToken; // skip this command
+                } else {
+                    targetAngle = currAngle + ang; // left is +angle
+                    commandInProgress = true;
+                }
+
+            } else if (cmd == 'r') {
+                bool hasNum = (numStr.length() > 0);
+                float ang = hasNum ? numStr.toFloat() : DEFAULT_TURN_DEG;
+
+                if (hasNum && ang < SKIP_TURN_DEG) {
+                    currentCommandIndex = nextIndexAfterToken; // skip this command
+                } else {
+                    targetAngle = currAngle - ang; // right is -angle
+                    commandInProgress = true;
+                }
+
+            } else if (cmd == 'f') {
+                bool hasNum = (numStr.length() > 0);
+                float dist = hasNum ? numStr.toFloat() : DEFAULT_FWD_MM;
+
+                if (hasNum && dist < SKIP_FWD_MM) {
+                    currentCommandIndex = nextIndexAfterToken; // skip tiny forward
+                } else {
+                    targetForwardMM = dist;
+
+                    // setup forward
+                    encoder1Start = encoder1.getDistanceMM();
+                    encoder2Start = encoder2.getDistanceMM();
+                    motor1.setPWM(forwardSpeedRight);
+                    motor2.setPWM(-forwardSpeedLeft);
+                    commandInProgress = true;
+                }
+
+            } else {
+                Serial.print("Unknown command: ");
+                Serial.println(cmd);
+                currentCommandIndex++;  // Skip unknown
+            }
+        }
+
+        // Turn left
+        if (commandInProgress && cmd == 'l') {
+            if (now - lastDisplayUpdate >= 100) {
+                // screen(cmd, currAngle);
+                lastDisplayUpdate = now;
+            }
+
+            if (angleError(currAngle, targetAngle) > 3.0f) {
+                motor1.setPWM(forwardSpeedRight * 0.25f);
+                motor2.setPWM(forwardSpeedLeft * 0.25f);
+            } else {
+                motor1.setPWM(0);
+                motor2.setPWM(0);
+                commandInProgress = false;
+                // FIX: go straight to next token after optional digits
+                currentCommandIndex = nextIndexAfterToken;
+            }
+        }
+
+        // Turn right
+        else if (commandInProgress && cmd == 'r') {
+            if (now - lastDisplayUpdate >= 100) {
+                // screen(cmd, currAngle);
+                lastDisplayUpdate = now;
+            }
+
+            if (angleError(currAngle, targetAngle) < -3.0f) {
+                motor1.setPWM(-forwardSpeedRight * 0.25f);
+                motor2.setPWM(-forwardSpeedLeft * 0.25f);
+            } else {
+                motor1.setPWM(0);
+                motor2.setPWM(0);
+                commandInProgress = false;
+                // FIX: jump past digits
+                currentCommandIndex = nextIndexAfterToken;
+            }
+        }
+
+        // Move forward
+        else if (commandInProgress && cmd == 'f') {
+            // Use encoder average against targetForwardMM
+            float d1 = fabsf(encoder1.getDistanceMM() - encoder1Start);
+            float d2 = fabsf(encoder2.getDistanceMM() - encoder2Start);
+            float avg = 0.5f * (d1 + d2);
+
+            if (now - lastDisplayUpdate >= 100) {
+                lastDisplayUpdate = now;
+                Serial.print("Forward avg (mm): ");
+                Serial.println(avg, 1);
+                Serial.print("Target (mm): ");
+                Serial.println(targetForwardMM, 1);
+                Serial.print("Encoder1 (mm): ");
+                Serial.println(encoder1.getDistanceMM(), 1);
+                Serial.print("Encoder2 (mm): ");
+                Serial.println(encoder2.getDistanceMM(), 1);
+            }
+
+            if (avg < targetForwardMM) {
+                // keep moving forward with your same logic & simple obstacle nudges
+                motor1.setPWM(forwardSpeedRight);
+                motor2.setPWM(-forwardSpeedLeft);
+
+                if (distFront < 105.0f) {
+                    motor1.setPWM(0);
+                    motor2.setPWM(0);
+                    commandInProgress = false;
+                    currentCommandIndex = nextIndexAfterToken; // FIX
+                }
+
+                if (distLeft < 30) {
+                    LeftSpeed  = (forwardSpeedLeft + 30) * 0.5f;
+                    RightSpeed = (forwardSpeedRight - 30) * 0.5f;
+                    motor1.setPWM(RightSpeed);
+                    motor2.setPWM(-LeftSpeed);
+                }
+
+                if (distRight < 30) {
+                    LeftSpeed  = (forwardSpeedLeft - 30) * 0.5f;
+                    RightSpeed = (forwardSpeedRight + 30) * 0.5f;
+                    motor1.setPWM(RightSpeed);
+                    motor2.setPWM(-LeftSpeed);
+                }
+
+                if (currentCommandIndex > comm.length()) {
+                    motor1.setPWM(0);
+                    motor2.setPWM(0);
+                }
+
+            } else {
+                commandInProgress = false;
+                currentCommandIndex = nextIndexAfterToken; // FIX
+            }
+
+        }
+
+    } else {
+        motor1.setPWM(0);
+        motor2.setPWM(0);
+        if (now - lastDisplayUpdate >= 500) {  // Idle update slower
+            // screen('-', 0.0f);
+            lastDisplayUpdate = now;
+        }
+    }
+
+    printLidarReadings();
+}
