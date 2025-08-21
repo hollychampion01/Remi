@@ -326,3 +326,37 @@ void stopRobot() {
   motor2.setPWM(0);
   delay(500);
 }
+
+static float normalizeAngle(float angle) {
+  while (angle > 180.0f) angle -= 360.0f;
+  while (angle < -180.0f) angle += 360.0f;
+  return angle;
+}
+
+static void updateIMU() {
+  mpu.update();
+  unsigned long now = micros();
+  float dt = (now - last_update_micros) / 1000000.0f;
+  last_update_micros = now;
+  float gyro_z = mpu.getGyroZ() - gyro_z_bias;
+  yaw_unwrapped += gyro_z * dt;
+  ahrs_angle = normalizeAngle(yaw_unwrapped);
+}
+
+static bool safeRecalibrateGyroBiasForTurn() {
+  float sum = 0.0f;
+  for (int i = 0; i < 100; ++i) {
+    mpu.update();
+    sum += mpu.getGyroZ();
+    delay(1);
+  }
+  gyro_z_bias = sum / 100.0f;
+  return true;
+}
+
+static void updateRotationDisplay() {
+#if VERBOSE
+  Serial.print("Yaw: ");
+  Serial.println(ahrs_angle);
+#endif
+}
